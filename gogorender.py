@@ -10,6 +10,7 @@
 ##############################################################################
 
 from mnemosyne.core import *
+from qt import *
 import sys
 import re
 import os, os.path
@@ -18,44 +19,77 @@ from PIL import Image, ImageDraw, ImageFont
 name = "gogorender"
 version = "0.9.0"
 
-def check_word(word, category, config):
+def choose_font(word, category, config):
+    # 1. decide whether to render
+    render = False
     for c in word:
 	if ord(c) > 255: # render any non-Latin-1 characters
-	    return True
-    return False
+	    render = True
+	    break
 
-def choose_font(word, category, config):
-    size = "%s.%ssize" % (category, config['style'])
-    fontpath = "%s.%sfont" % (category, config['style'])
-    return (int(config[size]), config[fontpath])
+    if not render:
+	return None
 
-def render_word(word, category, config, fontsize, fontpath):
-    fword = word.replace('/', '-sl-').replace('\\', '-bs-')
+    # 2. choose a font
+
+    font = config["%s.font" % category]
+    if font is None:
+	font = get_config("QA_font")
+	if font is None:
+	    font = "DejaVu Sans" # XXX adjust...
+				 # maybe None with a default in render_word? XXX
+	print "font=" + font # XXX
+
+    return (int(config["%s.size" % category]), font)
+
+def render_word(word, category, config, fontsize, font):
+
+    # 1. Working out the Qt-specific font details (and for filename)
+    style = ""
+    weight = QFont.Normal
+    if ('b' in config['style']):
+	weight = QFont.Bold
+	style = style + "b"
+
+    italic = False
+    if ('i' in config['style']):
+	italic = True
+	style = style + "i"
+
+    # 2. Generate a file name
+    fword = word.replace('/', '_sl-').replace('\\', '_bs-')
     if fword[0] == '.': fword = '-' + fword
 
-    filename = "%s-%s-%s-%s.png" % (
-	fword.encode('punycode'),
-	os.path.basename(fontpath),
-	str(fontsize),
-	config['color'])
+    filename = "%s-%s-%s-%s-%s.png" % (
+	fword.encode('punycode'), font.replace(' ', '_'),
+	    str(fontsize), style, config['color'])
     path = os.path.join(config['imgpath'], filename)
 
     if (os.path.exists(path)):
 	return path
 
-    try:
-	font = ImageFont.truetype(fontpath, fontsize)
-    except:
-	logger.error("%s: cannot open font from '%s' at size %d"
-		     % (name, fontpath, fontsize))
+    # 3. Render with Qt
+    text = QString(word)
+
+    font = QFont(font, fontsize, weight, italic)
+    fm = QFontMetrics(font)
+    width = fm.width(text) + 10 # XXX change to a fraction of the charwidth or similar
+    height = fm.height()
+    
+    pix = QPixmap(width, height)
+    pix.fill(QColor('white'))
+
+    p = QPainter()
+    p.begin(pix)
+    p.setFont(font)
+    p.setPen(QColor(config['color']))
+    p.drawText(0, 0, width, height, 0, text)
+    p.end()
+
+    if pix.save(path, "PNG"):
+	return path
+    else:
 	return None
-
-    im = Image.new("RGB", font.getsize(word), 'white')
-    draw = ImageDraw.Draw(im)
-    draw.text((0,0), word, font=font, fill=config['color'])
-    im.save(path)
-
-    return path
 
 class Config:
     def __init__(self):
@@ -66,13 +100,11 @@ class Config:
 	    config = {}
 	
 	defaults = {
-	    'max_word_length' : 0,
-	    'font' : 'symbols.ttf',
-	    'size' : '10',
+	    'font' : None,
+	    'size' : '12',
 	    'ignore' : r'[()]',
 	    'basedir' : get_basedir(),
 	    'imgpath' : os.path.join(get_basedir(), name),
-	    'mnemogogo.word_fn' : check_word,
 	    'mnemogogo.font_fn' : choose_font,
 	    'mnemogogo.render_fn' : render_word,
 	    'clear_imgpath' : True,
@@ -84,18 +116,8 @@ class Config:
 	
 	# override defaults
 	fallbacks = [
-	    ('ifont', 'font'),
-	    ('bfont', 'font'),
-	    ('bifont', 'ifont'),
-	    ('ibfont', 'bfont'),
-	    ('isize', 'size'),
-	    ('bsize', 'size'),
-	    ('bisize', 'isize'),
-	    ('ibsize', 'bsize'),
-	    ('mnemogogo.word_fn', 'word_fn'),
 	    ('mnemogogo.font_fn', 'font_fn'),
 	    ('mnemogogo.render_fn', 'render_fn'),
-	    ('mnemosyne.word_fn', 'word_fn'),
 	    ('mnemosyne.font_fn', 'font_fn'),
 	    ('mnemosyne.render_fn', 'render_fn'),
 	]
@@ -104,11 +126,6 @@ class Config:
 	    if (not config.has_key(setting)) and config.has_key(fallback):
 		config[setting] = config[fallback]
 	
-	for key in ['font', 'ifont', 'bfont', 'ibfont', 'bifont']:
-	    font = config[key]
-	    if (font != '') and (font[0] != '/'):
-		config[key] = os.path.join(config['basedir'], 'fonts', font)
-
 	self.config = config
 
     def has_key(self, key):
@@ -145,8 +162,6 @@ class Splitter:
 		  + ')*\s*/?>)')
 
     def __init__(self, text, config):
-	self.max_word_length = config['max_word_length']
-
 	extra_ignore = ''
 	if config['ignore'] != '':
 	    extra_ignore = r'(%s)|' % config['ignore']
@@ -203,10 +218,6 @@ class Splitter:
 	if not r:
 	    self.word.append(self.text[0])
 	    self.text = self.text[1:]
-	    if ((self.max_word_length > 0)
-		  and (len(self.word) >= self.max_word_length)):
-		return self.return_word()
-
 	    return self.next()
 	
 	# return word
@@ -258,6 +269,8 @@ class Gogorender(Plugin):
 		version + ")")
 
     def load(self):
+	logger.info("%s: version %s" % (name, version))
+
 	self.config = Config()
 	imgpath = self.config['imgpath']
 
@@ -274,8 +287,7 @@ class Gogorender(Plugin):
 	    os.mkdir(imgpath)
 
 	self.format_mnemosyne = (
-		self.config.has_key('mnemosyne.word_fn')
-	    and self.config.has_key('mnemosyne.font_fn')
+	        self.config.has_key('mnemosyne.font_fn')
 	    and self.config.has_key('mnemosyne.render_fn'))
 
 	if (self.format_mnemosyne):
@@ -283,8 +295,7 @@ class Gogorender(Plugin):
 	    register_function_hook("filter_a", self.mnemosyne_format)
 
 	self.format_mnemogogo = (
-		self.config.has_key('mnemogogo.word_fn')
-	    and self.config.has_key('mnemogogo.font_fn')
+	        self.config.has_key('mnemogogo.font_fn')
 	    and self.config.has_key('mnemogogo.render_fn'))
 
 	if (self.format_mnemogogo):
@@ -302,33 +313,41 @@ class Gogorender(Plugin):
     
     def mnemosyne_format(self, text, card):
 	return self.format(text, card,
-			   self.config['mnemosyne.word_fn'],
 			   self.config['mnemosyne.font_fn'],
 			   self.config['mnemosyne.render_fn'])
 
     def mnemogogo_format(self, text, card):
 	return self.format(text, card,
-			   self.config['mnemogogo.word_fn'],
 			   self.config['mnemogogo.font_fn'],
 			   self.config['mnemogogo.render_fn'])
 
-    def format(self, text, card, word_fn, font_fn, render_fn):
+    def format(self, text, card, font_fn, render_fn):
 	splitter = Splitter(text, self.config)
 
 	r = []
 	for (word, state) in splitter:
-	    if (not state) or (not word_fn(word, card.cat.name, self.config)):
+	    if (not state):
 		r.append(word)
 		continue
 	    
 	    for (key, value) in state.iteritems():
 		self.config[key] = value
 
-	    (size, fontpath) = font_fn(word, card.cat.name, self.config)
+	    try:
+		font = font_fn(word, card.cat.name, self.config)
+	    except Exception, e:
+		logger.error("%s: failure in font_fn: %s" % (name, str(e)))
+		font = None
+
+	    if font is None:
+		r.append(word)
+		continue
+
+	    (size, fontname) = font
 
 	    try:
 		path = render_word(word, card.cat.name, self.config,
-				   size, fontpath)
+				   size, fontname)
 	    except Exception, e:
 		logger.error("%s: failure in render_word: %s" % (name, str(e)))
 		path = None

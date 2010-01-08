@@ -1,4 +1,5 @@
-gogorender.py <timbob@bigpond.com>
+gogorender.py
+Timothy Bourke <timbob@bigpond.com>
 
 Plugin for rendering segments of text as image files.
 

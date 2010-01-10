@@ -25,7 +25,7 @@
 # ($HOME/.mnemosyne), and add lines similar too:
 # gogorender = {
 #   'size' : 48,
-#   'font
+#   'font' : 'DejaVu Sans'
 # }
 #
 # Valid options include:
@@ -33,7 +33,7 @@
 #	font			font (defaults to Mnemosyne QA font)
 #	<categoryname>.size	size per category
 #	<categoryname>.font	font per category
-#	ignore			regular expression for matching character
+#	reignore		regular expression for matching character
 #				sequences that should be ignored (not
 #				considered as words).
 #	imgpath			the path for saving images, defaults to
@@ -54,11 +54,13 @@
 #				be a full path, e.g. 'mymodule.name', or
 #				a function name (NOT the function itself)
 #				in either gogorender.py or config.py.
+#	split_fn		the name of a function called to break
+#				text up into words for rendering (or not).
 #	render_fn		the name of a function that is called to
 #				render a word as an image.
 #
-# See the 'choose_font' and 'render_word' functions in this file for
-# examples, and the required interface.
+# See the 'choose_font', 'split_text', and 'render_word' functions in this
+# file for examples, and the required interface.
 #
 ##############################################################################
 
@@ -71,10 +73,13 @@ import os, os.path
 from PIL import Image, ImageDraw, ImageFont
 
 name = "gogorender"
-version = "0.9.0"
+version = "0.9.1"
 
+# Must return one of:
+#   None	    do not render the given word
+#   (size, font)    a font size (integer) and name to use in rendering the
+#		    given word
 def choose_font(word, category, config):
-
     if config['%s.ignore' % category]:
 	return None
 
@@ -96,6 +101,76 @@ def choose_font(word, category, config):
 
     return (int(config["%s.size" % category]), font)
 
+# Split the given text into pieces, the font choice and render functions
+# will be called against each piece. The text will never contain html tags.
+wsregex = re.compile(r'([ \t\n]+)', re.MULTILINE)
+
+def simple_split(text, category, config):
+    return wsregex.split(text)
+
+# This splitter groups words that would be rendered with the same font,
+# including the spaces between them. It does not group across line
+# breaks. This approach has two main advantages:
+#  * Less individual image files, and thus less security prompts.
+#  * Proper rendering of right-to-left scripts (like Arabic and Hebrew).
+# and two main disadvantages:
+#  * Less individual image files, and thus less opportunity for
+#    line-breaking; Mnemogogo will instead scale images.
+#  * The function is more complex.
+def split_text(text, category, config):
+    font_fn = config.get_function('font_fn')
+
+    def classify_word(word, category=category, config=config):
+	if wsregex.match(word):
+	    if '\n' in word:
+		return 'X-newline'
+	    return 'space'
+	f = font_fn(word, category, config)
+	if f is None:
+	    return 'norender'
+	return '%d-%s' % f
+
+    wordlist = wsregex.split(text)
+    wordlist.append(None)
+
+    r = []
+    prev = 'X-first'
+    space = []
+    words = []
+    for word in wordlist:
+	if word is None:
+	    curr = 'X-last'
+	else:
+	    curr = classify_word(word)
+
+	if (curr == 'space') and (prev != 'space'):
+	    if words == []:
+		words.append(word)
+		prev = curr
+	    else:
+		space.append(word)
+	    continue
+	
+	if (curr == prev) and (curr[0] != 'X'):
+	    words.extend(space)
+	    space = []
+	    words.append(word)
+	else:
+	    r.append(''.join(words))
+	    if space != []:
+		r.append(''.join(space))
+		space = []
+	    words = [word]
+	    prev = curr
+
+    return r
+
+# Must return one of:
+#   None	    not rendered after all
+#   path	    a path to the rendered image
+# config will contain
+#  style	    a string with 'b' for bold and 'i' for italic
+#  color	    current color
 def render_word(word, category, config, fontsize, font):
     # 1. Working out the Qt-specific font details (and for filename)
     style = ""
@@ -113,7 +188,7 @@ def render_word(word, category, config, fontsize, font):
 	font = "Helvetica"
 
     # 2. Generate a file name
-    fword = word.replace('/', '_sl-').replace('\\', '_bs-')
+    fword = word.replace('/', '_sl-').replace('\\', '_bs-').replace(' ', '_')
     if fword[0] == '.': fword = '-' + fword
 
     filename = "%s-%s-%s-%s-%s.png" % (
@@ -158,10 +233,11 @@ class Config:
 	defaults = {
 	    'font' : None,
 	    'size' : '12',
-	    'ignore' : r'[()]',
+	    'reignore' : r'[()]',
 	    'basedir' : get_basedir(),
 	    'imgpath' : os.path.join(get_basedir(), name),
 	    'font_fn' : 'choose_font',
+	    'split_fn' : 'split_text',
 	    'render_fn' : 'render_word',
 	    'clear_imgpath' : True,
 	}
@@ -227,12 +303,12 @@ class Splitter:
 		  + r'|' + other_att
 		  + ')*\s*/?>)')
 
-    def __init__(self, text, config):
+    def __init__(self, text, category, split_fn, config):
 	extra_ignore = ''
-	if config['ignore'] != '':
-	    extra_ignore = r'(%s)|' % config['ignore']
+	if config['reignore'] != '':
+	    extra_ignore = r'(%s)|' % config['reignore']
 
-	ignore_re_text = (r'(?P<ignore>\s+|&#?[A-Za-z0-9]+;|'
+	ignore_re_text = (r'(?P<ignore>&#?[A-Za-z0-9]+;|'
 			  + extra_ignore + self.ignore_tag + r')(?P<rest>.*)')
 	self.ignore_re = re.compile(ignore_re_text,
 	    re.IGNORECASE + re.MULTILINE + re.DOTALL + re.UNICODE)
@@ -241,8 +317,13 @@ class Splitter:
 	    'color' : ['black'],
 	    'style' : [],
 	}
-	self.word = []
+	self.curr = []
+	self.words = []
+
+	self.category = category
 	self.text = text
+	self.split_fn = split_fn
+	self.config = config
 
     def __iter__(self):
 	return self
@@ -267,28 +348,37 @@ class Splitter:
                 pass
 	return d
 
-    def return_word(self):
-	word = ''.join(self.word)
-	self.word = []
-	return (word, self.short_state())
+    def split_curr(self):
+	curr = ''.join(self.curr)
+	self.curr = []
+
+	self.words = self.split_fn(curr, self.category, self.config)
+	if self.words == []:
+	    self.words = [curr]
+	self.words.reverse()
+
+	return (self.words.pop(), self.short_state())
 
     def next(self):
+	if self.words != []:
+	    return (self.words.pop(), self.short_state())
+
 	if self.text == '':
-	    if len(self.word) > 0:
-		return self.return_word()
+	    if len(self.curr) > 0:
+		return self.split_curr()
 	    raise StopIteration
 
 	r = self.ignore_re.match(self.text)
 
 	# keep building word
 	if not r:
-	    self.word.append(self.text[0])
+	    self.curr.append(self.text[0])
 	    self.text = self.text[1:]
 	    return self.next()
 	
 	# return word
-	if self.word != []:
-	    return self.return_word()
+	if self.curr != []:
+	    return self.split_curr()
 
 	# ignore element (track state)
 	tag = r.group('tag')
@@ -320,7 +410,7 @@ class Splitter:
 	return (r.group('ignore'), None)
 
 def test_splitter():
-    splitter = Splitter(sys.stdin.read(), Config())
+    splitter = Splitter(sys.stdin.read(), 'test', split_text, Config())
     for (word, state) in splitter:
 	if state:
 	    print ("'%s' (style=%s color=%s)" % (word, state['style'], state['color']))
@@ -354,6 +444,7 @@ class Gogorender(Plugin):
 
 	self.format_mnemosyne = (
 	        self.config.has_key('mnemosyne.font_fn')
+	    and self.config.has_key('mnemosyne.split_fn')
 	    and self.config.has_key('mnemosyne.render_fn'))
 
 	if (self.format_mnemosyne):
@@ -362,6 +453,7 @@ class Gogorender(Plugin):
 
 	self.format_mnemogogo = (
 	        self.config.has_key('font_fn')
+	    and self.config.has_key('split_fn')
 	    and self.config.has_key('render_fn'))
 
 	if (self.format_mnemogogo):
@@ -380,19 +472,21 @@ class Gogorender(Plugin):
     def mnemosyne_format(self, text, card):
 	return self.format(text, card,
 			   self.config.get_function('mnemosyne.font_fn'),
+			   self.config.get_function('mnemosyne.split_fn'),
 			   self.config.get_function('mnemosyne.render_fn'))
 
     def mnemogogo_format(self, text, card):
 	return self.format(text, card,
 			   self.config.get_function('font_fn'),
+			   self.config.get_function('split_fn'),
 			   self.config.get_function('render_fn'))
 
-    def format(self, text, card, font_fn, render_fn):
+    def format(self, text, card, font_fn, split_fn, render_fn):
 
 	if (font_fn is None) or (render_fn is None):
 	    return text
 
-	splitter = Splitter(text, self.config)
+	splitter = Splitter(text, card.cat.name, split_fn, self.config)
 
 	r = []
 	for (word, state) in splitter:

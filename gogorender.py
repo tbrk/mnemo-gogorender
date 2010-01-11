@@ -43,6 +43,10 @@
 #				(defaults to True)
 #	dont_render		a unicode string containing all non-latin-1
 #				characters that should not trigger rendering
+#				(You may need to change the top line of
+#				 config.py to:
+#				 # encoding: utf-8
+#				 to avoid a compilation error.)
 #	<categoryname>.ignore	exclude certain categories
 #
 # Advanced use
@@ -276,6 +280,11 @@ class Config:
 
     def has_key(self, key):
 	return self.config.has_key(key)
+
+    def get(self, key, default):
+	if self.config.has_key(key):
+	    return self.config[key]
+	return default
 
     def __getitem__(self, key):
 	if self.config.has_key(key):

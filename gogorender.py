@@ -79,7 +79,7 @@ import os, os.path
 from PIL import Image, ImageDraw, ImageFont
 
 name = "gogorender"
-version = "0.9.1"
+version = "1.0.0"
 
 # Must return one of:
 #   None	    do not render the given word

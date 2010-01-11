@@ -41,6 +41,8 @@
 #				directory.
 #	clear_imgpath		clear the image path on startup
 #				(defaults to True)
+#	dont_render		a unicode string containing all non-latin-1
+#				characters that should not trigger rendering
 #	<categoryname>.ignore	exclude certain categories
 #
 # Advanced use
@@ -83,10 +85,12 @@ def choose_font(word, category, config):
     if config['%s.ignore' % category]:
 	return None
 
+    dont_render = config.get('dont_render', u"")
+
     # 1. decide whether to render
     render = False
     for c in word:
-	if ord(c) > 255: # render any non-Latin-1 characters
+	if (ord(c) > 255) and (c not in dont_render):
 	    render = True
 	    break
 

@@ -41,12 +41,16 @@
 #				directory.
 #	clear_imgpath		clear the image path on startup
 #				(defaults to True)
+#	render_match		only non-latin1 characters that match this
+#				regular expression are considered for rendering.
+#				Defaults to '.', i.e. all characters.
 #	dont_render		a unicode string containing all non-latin-1
 #				characters that should not trigger rendering
 #				(You may need to change the top line of
 #				 config.py to:
 #				 # encoding: utf-8
 #				 to avoid a compilation error.)
+#				This filter is applied after render_match.
 #	<categoryname>.ignore	exclude certain categories
 #
 # Advanced use
@@ -78,7 +82,7 @@ from copy import copy
 import os, os.path
 
 name = "gogorender"
-version = "1.0.1"
+version = "1.0.2"
 
 # Must return one of:
 #   None	    do not render the given word
@@ -88,12 +92,13 @@ def choose_font(word, category, config):
     if config['%s.ignore' % category]:
 	return None
 
+    render_match_re = config['render_match_re']
     dont_render = config.get('dont_render', u"")
 
     # 1. decide whether to render
     render = False
     for c in word:
-	if (ord(c) > 255) and (c not in dont_render):
+	if (render_match_re.match(c) and (ord(c) > 255) and (c not in dont_render)):
 	    render = True
 	    break
 
@@ -441,6 +446,8 @@ class Gogorender(Plugin):
 
 	self.config = Config()
 	imgpath = self.config['imgpath']
+	self.config['render_match_re'] = re.compile(
+		self.config.get('render_match', r'.'), re.DOTALL)
 
 	if self.config['clear_imgpath'] and os.path.exists(imgpath):
 	    for file in os.listdir(imgpath):

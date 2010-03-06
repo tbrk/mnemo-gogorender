@@ -98,7 +98,7 @@ def choose_font(word, category, config):
     # 1. decide whether to render
     render = False
     for c in word:
-	if (render_match_re.match(c) and (ord(c) > 255) and (c not in dont_render)):
+	if ((ord(c) > 255) and render_match_re.match(c) and (c not in dont_render)):
 	    render = True
 	    break
 

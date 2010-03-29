@@ -400,11 +400,19 @@ class Splitter:
 	# ignore element (track state)
 	tag = r.group('tag')
 	if tag:
+	    if (tag == 'u'):
+		tag = 'i'
+	    elif (tag == '/u'):
+		tag = '/i'
+
 	    if (tag == 'i') or (tag == 'b'):
 		self.state['style'].append(tag)
 
 	    elif (tag == '/i') or (tag == '/b'):
-		self.state['style'].pop()
+		try:
+		    self.state['style'].pop()
+		except IndexError:
+		    pass
 
 	    elif tag == 'font':
 		if r.group('color'):
@@ -421,7 +429,10 @@ class Splitter:
 
 	    elif (((tag == '/font') or (tag == '/span'))
 		  and (len(self.state['color']) > 0)):
-		self.state['color'].pop()
+		try:
+		    self.state['color'].pop()
+		except IndexError:
+		    pass
 	
 	self.text = r.group('rest')
 	return (r.group('ignore'), None)

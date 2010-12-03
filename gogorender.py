@@ -111,7 +111,12 @@ def choose_font(word, category, config):
     if font is None:
 	font = get_config("QA_font")
 
-    return (int(config["%s.size" % category]), font)
+    try:
+	size = int(config["%s.size" % category])
+    except (ValueError, TypeError):
+	size = config["size"]
+
+    return (size, font)
 
 # Split the given text into pieces, the font choice and render functions
 # will be called against each piece. The text will never contain html tags.

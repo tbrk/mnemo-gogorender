@@ -82,7 +82,7 @@ from copy import copy
 import os, os.path
 
 name = "gogorender"
-version = "1.0.3"
+version = "1.0.4"
 
 # Must return one of:
 #   None	    do not render the given word

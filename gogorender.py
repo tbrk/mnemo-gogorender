@@ -82,7 +82,7 @@ from copy import copy
 import os, os.path
 
 name = "gogorender"
-version = "1.0.4"
+version = "1.1.0"
 
 # Must return one of:
 #   None	    do not render the given word
@@ -124,6 +124,9 @@ wsregex = re.compile(r'([ \t\n]+)', re.MULTILINE)
 
 def simple_split(text, category, config):
     return wsregex.split(text)
+
+def list_split(text, category, config):
+    return list(text)
 
 # This splitter groups words that would be rendered with the same font,
 # including the spaces between them. It does not group across line

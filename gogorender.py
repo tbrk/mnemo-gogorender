@@ -51,6 +51,7 @@
 #				 # encoding: utf-8
 #				 to avoid a compilation error.)
 #				This filter is applied after render_match.
+#	transparent		transparent background? (default: true)
 #	<categoryname>.ignore	exclude certain categories
 #
 # Advanced use
@@ -82,7 +83,7 @@ from copy import copy
 import os, os.path
 
 name = "gogorender"
-version = "1.1.0"
+version = "1.2.0"
 
 # Must return one of:
 #   None	    do not render the given word
@@ -185,12 +186,58 @@ def split_text(text, category, config):
 
     return r
 
+def drawtext(width, height, font, color, text, path):
+    pix = QPixmap(width, height)
+    pix.fill(QColor('white'))
+
+    p = QPainter()
+    p.begin(pix)
+    p.setFont(font)
+    p.setPen(QColor(color))
+    p.drawText(0, 0, width, height, 0, text)
+    p.end()
+
+    if pix.save(path, "PNG"):
+	return path
+    else:
+	return None
+
+def transtext(width, height, font, color, text, path):
+    pix = QPixmap(width, height)
+    pix.fill(QColor('black'))
+
+    p = QPainter()
+    p.begin(pix)
+    p.setFont(font)
+    p.setPen(QColor(255,0,0)) # all red
+    p.drawText(0, 0, width, height, 0, text)
+    p.end()
+
+    img = pix.convertToImage()
+    img.setAlphaBuffer(1)
+
+    c = QColor(color)
+    r = qRed(c.rgb())
+    b = qBlue(c.rgb())
+    g = qGreen(c.rgb())
+
+    for x in range(0, img.width()):
+	for y in range(0, img.height()):
+	    pix = img.pixel(x, y)
+	    img.setPixel(x, y, qRgba(r, b, g, qRed(pix)))
+
+    if img.save(path, "PNG"):
+	return path
+    else:
+	return None
+
 # Must return one of:
 #   None	    not rendered after all
 #   path	    a path to the rendered image
 # config will contain
 #  style	    a string with 'b' for bold and 'i' for italic
 #  color	    current color
+#  transparent	    a boolean
 def render_word(word, category, config, fontsize, font):
     # 1. Working out the Qt-specific font details (and for filename)
     style = ""
@@ -226,22 +273,14 @@ def render_word(word, category, config, fontsize, font):
     fm = QFontMetrics(font)
     width = fm.width(text) + (fm.charWidth('M', 0) / 2)
     height = fm.height()
-    
-    pix = QPixmap(width, height)
-    pix.fill(QColor('white'))
 
-    p = QPainter()
-    p.begin(pix)
-    p.setFont(font)
-    p.setPen(QColor(config['color']))
-    p.drawText(0, 0, width, height, 0, text)
-    p.end()
-
-    if pix.save(path, "PNG"):
-	return path
+    if config.get('transparent', True):
+	r = transtext(width, height, font, config['color'], text, path)
     else:
-	return None
+	r = drawtext(width, height, font, config['color'], text, path)
 
+    return r
+    
 class Config:
     def __init__(self):
 
@@ -260,6 +299,7 @@ class Config:
 	    'split_fn' : 'split_text',
 	    'render_fn' : 'render_word',
 	    'clear_imgpath' : True,
+	    'transparent' : True,
 	}
 
 	for (setting, default) in defaults.iteritems():

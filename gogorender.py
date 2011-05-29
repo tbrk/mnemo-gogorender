@@ -1,7 +1,7 @@
 ##############################################################################
 #
 # gogorender.py
-# Timothy Bourke <timbob@bigpond.com>
+# Timothy Bourke <tim@tbrk.org>
 #
 # Plugin for rendering segments of text as image files.
 #

@@ -11,8 +11,8 @@ class TestRender(Plugin):
 
     def render_word(self, word, font, fontsize):
         path = '%s/test-%s-%s.png' % (self.destination,
-			       font.replace(' ', '_'),
-    			       word.encode('punycode').replace(' ', '_'))
+                               font.replace(' ', '_'),
+                               word.encode('punycode').replace(' ', '_'))
     
         text = QString(word)
     
@@ -35,18 +35,18 @@ class TestRender(Plugin):
             print "could not save to %s" % path
 
     def description(self):
-	return ("Description")
+        return ("Description")
 
     def load(self):
-	testfonts = ['Helvetica', 'DejaVu Sans']
-	testtext = [u'Test', u'bɔ̃ʒuʀ', u'ελληνική γλώσσα']
+        testfonts = ['Helvetica', 'DejaVu Sans']
+        testtext = [u'Test', u'bɔ̃ʒuʀ', u'ελληνική γλώσσα']
 
-	for font in testfonts:
-	    for text in testtext:
-	        self.render_word(text, font, 48)
+        for font in testfonts:
+            for text in testtext:
+                self.render_word(text, font, 48)
 
     def unload(self):
-	pass
+        pass
 
 p = TestRender()
 p.load()

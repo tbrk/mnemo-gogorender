@@ -271,8 +271,15 @@ def render_word(word, category, config, fontsize, font):
 
     font = QFont(font, fontsize, weight, italic)
     fm = QFontMetrics(font)
+
     width = fm.width(text) + (fm.charWidth('M', 0) / 2)
     height = fm.height()
+
+    # Alternative: calculate the bounding box from the text being rendered;
+    #              disadvantage = bad alignment of adjacent images.
+    #bbox = fm.boundingRect(text)
+    #width = bbox.width()
+    #height = bbox.height()
 
     if config.get('transparent', True):
         r = transtext(width, height, font, config['color'], text, path)

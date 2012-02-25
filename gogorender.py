@@ -288,7 +288,9 @@ if mnemosyne_version == 1:
             font = "Helvetica"
 
         # 2. Generate a file name
-        fword = word.replace('/', '_sl-').replace('\\', '_bs-').replace(' ', '_')
+        fword = word.replace('/',  '_sl-')\
+                    .replace('\\', '_bs-')\
+                    .replace(' ',  '_')
         if fword[0] == '.': fword = '-' + fword
 
         filename = "%s-%s-%s-%s-%s.png" % (
@@ -647,8 +649,6 @@ if mnemosyne_version == 1:
 # Mnemosyne 2.x
 elif mnemosyne_version == 2:
 
-    debug = False
-
     default_config = {
         'transparent'     : True,
         'render_char'     : u'[\u0100-\uff00]',
@@ -712,14 +712,6 @@ elif mnemosyne_version == 2:
     def movenext(pos):
         pos.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor)
 
-    def debugline(msg, pos):
-        if debug:
-            s = pos.selectedText()
-            try:
-                c = ord(unicode(s[0]))
-            except IndexError: c = 0
-            print u'%s pos=%d char="%s" (0x%04x)' % (msg, pos.position(), s, c)
-
     class Gogorender(Filter):
         name = name
         version = version
@@ -727,6 +719,7 @@ elif mnemosyne_version == 2:
         def __init__(self, component_manager):
             Filter.__init__(self, component_manager)
             self.reconfigure()
+            self.debug = component_manager.debug_file != None
 
         def setting(self, key):
             try:
@@ -747,6 +740,16 @@ elif mnemosyne_version == 2:
             self.render_char_re     = QRegExp(self.setting('render_char'))
             self.not_render_char_re = QRegExp(self.setting('not_render_char'))
             self.not_word_re        = QRegExp(self.setting('not_word'))
+
+        def debugline(self, msg, pos):
+            if self.debug:
+                s = pos.selectedText()
+                try:
+                    c = ord(unicode(s[0]))
+                except IndexError: c = 0
+                self.component_manager.debug(
+                    u'gogorender: %s pos=%d char="%s" (0x%04x)'
+                    % (msg, pos.position(), s, c))
 
         # Must return one of:
         #   None            not rendered after all
@@ -814,18 +817,21 @@ elif mnemosyne_version == 2:
         def run(self, text, card, fact_key, **render_args):
             doc = QTextDocument()
             doc.setHtml(text)
-            if debug: print "%s\n%s\n%s" % (70 * "-", text, 70 * "-")
+            if self.debug:
+                self.component_manager.debug(
+                    "gogorender: %s\ngogorender: %s\ngogorender: %s"
+                    % (70 * "-", text, 70 * "-"))
 
             pos = doc.find(self.render_char_re)
             while not pos.isNull():
                 s = pos.selectedText()
                 if (self.not_render_char_re.exactMatch(s)
                         or self.not_word_re.exactMatch(s)):
-                    debugline("skip", pos)
+                    self.debugline("skip", pos)
                     movenext(pos)
                     pos = doc.find(self.render_char_re, pos)
                     continue;
-                debugline("==", pos)
+                self.debugline("==", pos)
 
                 fmt = pos.charFormat()
                 font = fmt.font()
@@ -837,11 +843,11 @@ elif mnemosyne_version == 2:
                     moveprev(pos)
                     s = pos.selectedText()
                     ccolor = pos.charFormat().foreground().color()
-                    debugline("<--", pos)
+                    self.debugline("<--", pos)
 
                     if len(s) > 0 and self.not_word_re.exactMatch(s[0]):
                         movenext(pos)
-                        debugline("-->", pos)
+                        self.debugline("-->", pos)
                         break;
 
                     if pos.charFormat().font() != font or ccolor != color:
@@ -854,17 +860,19 @@ elif mnemosyne_version == 2:
                     movenext(pos)
                     s = pos.selectedText()
                     ccolor = pos.charFormat().foreground().color()
-                    debugline("-->", pos)
+                    self.debugline("-->", pos)
 
                     if (pos.charFormat().font() != font or ccolor != color
                             or self.not_word_re.exactMatch(s[-1])):
                         moveprev(pos)
-                        debugline("<--)", pos)
+                        self.debugline("<--)", pos)
                         break;
 
                 if pos.hasSelection():
                     word = pos.selectedText()
-                    if debug: print u'word="%s"' % word
+                    if self.debug:
+                        self.component_manager.debug(
+                            u'gogorender: word="%s"' % word)
                     path = self.render_word(unicode(word), font, color)
 
                     if path is not None:

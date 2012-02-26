@@ -715,6 +715,7 @@ elif mnemosyne_version == 2:
     class Gogorender(Filter):
         name = name
         version = version
+        tag_re = re.compile("(<[^>]*>)")
 
         def __init__(self, component_manager):
             Filter.__init__(self, component_manager)
@@ -814,14 +815,49 @@ elif mnemosyne_version == 2:
             else:
                 return None
 
+        def substitute(self, text, mapping):
+            r = []
+            for s in self.tag_re.split(text):
+                if len(s) == 0 or s[0] == '<':
+                    r.append(s)
+                    continue
+
+                while mapping:
+                    (match, path) = mapping[0]
+
+                    (before, x, after) = s.partition(match)
+                    if x == '':
+                        s = before
+                        break
+                    
+                    r.append(before)
+                    r.append('<img src="%s"/>' % path)
+                    mapping = mapping[1:]
+                    s = after
+
+                r.append(s)
+
+            return ''.join(r)
+
         def run(self, text, card, fact_key, **render_args):
             doc = QTextDocument()
+
+            proxy_key = card.card_type.fact_key_format_proxies()[fact_key]
+            font_string = self.config().card_type_property(
+                "font", card.card_type, proxy_key)
+
+            if font_string:
+                family,size,x,x,weight,italic,u,s,x,x = font_string.split(",")
+                font = QtGui.QFont(family, int(size), int(weight), bool(int(italic)))
+                doc.setDefaultFont(font)
+
             doc.setHtml(text)
             if self.debug:
                 self.component_manager.debug(
                     "gogorender: %s\ngogorender: %s\ngogorender: %s"
                     % (70 * "-", text, 70 * "-"))
 
+            render = []
             pos = doc.find(self.render_char_re)
             while not pos.isNull():
                 s = pos.selectedText()
@@ -876,12 +912,14 @@ elif mnemosyne_version == 2:
                     path = self.render_word(unicode(word), font, color)
 
                     if path is not None:
-                        pos.removeSelectedText()
-                        pos.insertHtml('<img src="%s"/>' % path)
+                        render.append((unicode(word), unicode(path)))
 
                 pos = doc.find(self.render_char_re, pos)
 
-            return unicode(doc.toHtml())
+            if render:
+                return self.substitute(unicode(text), render)
+            else:
+                return text
 
     class GogorenderPlugin(Plugin):
         name = name

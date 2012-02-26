@@ -703,7 +703,8 @@ elif mnemosyne_version == 2:
             for chain in render_chains:
                 try:
                     filter = self.render_chain(chain).filter(Gogorender)
-                    filter.reconfigure()
+                    if filter:
+                        filter.reconfigure()
                 except KeyError: pass
 
     def moveprev(pos):

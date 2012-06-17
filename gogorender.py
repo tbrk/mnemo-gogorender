@@ -658,6 +658,8 @@ elif mnemosyne_version == 2:
         # \x2028 is the "Line Separator"
         # \x2029 is the "Paragraph Separator"
         'not_word'        : u'[\s\u2028\u2029\ufffc]',
+
+        'default_render'  : False,
     }
 
     def translate(text):
@@ -692,13 +694,21 @@ elif mnemosyne_version == 2:
             self.transparent.setChecked(config["transparent"])
             toplayout.addRow(translate("Render with transparency:"), self.transparent)
 
+            self.default_render = QtGui.QCheckBox(self)
+            self.default_render.setChecked(config["default_render"])
+            toplayout.addRow(translate("Render in Mnemosyne (for testing):"),
+                             self.default_render)
+
             vlayout.addLayout(toplayout)
 
         def apply(self):
-            self.config()["gogorender"]["not_render_char"] = \
-                u"[%s]" % unicode(self.not_render_char.text())
-            self.config()["gogorender"]["transparent"] = \
-                self.transparent.isChecked()
+            was_default_render = self.config()["gogorender"]["default_render"]
+
+            config = self.config()['gogorender']
+
+            config["not_render_char"] = u"[%s]" % unicode(self.not_render_char.text())
+            config["transparent"]     = self.transparent.isChecked()
+            config["default_render"]  = self.default_render.isChecked()
 
             for chain in render_chains:
                 try:
@@ -706,6 +716,12 @@ elif mnemosyne_version == 2:
                     if filter:
                         filter.reconfigure()
                 except KeyError: pass
+
+            if was_default_render != config['default_render']:
+                if was_default_render:
+                    self.render_chain('default').unregister_filter(Gogorender)
+                else:
+                    self.render_chain('default').register_at_back(Gogorender)
 
     def moveprev(pos):
         pos.movePosition(QTextCursor.PreviousCharacter, QTextCursor.KeepAnchor)
@@ -929,6 +945,8 @@ elif mnemosyne_version == 2:
 
         def __init__(self, component_manager):
             Plugin.__init__(self, component_manager)
+            if  self.config()['gogorender']['default_render']:
+                render_chains.append('default')
 
         def activate(self):
             Plugin.activate(self)

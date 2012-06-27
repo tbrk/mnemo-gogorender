@@ -15,300 +15,247 @@
 #
 ##############################################################################
 
+from PyQt4 import QtCore
+from PyQt4 import QtGui
+from PyQt4.QtGui import QTextDocument, QTextCursor
+from PyQt4.QtCore import QRegExp
+
+from mnemosyne.libmnemosyne.hook import Hook
+from mnemosyne.libmnemosyne.filter import Filter
+from mnemosyne.libmnemosyne.plugin import Plugin
+from mnemosyne.libmnemosyne.ui_components.configuration_widget import \
+   ConfigurationWidget
+
+import sys
+import re
+from copy import copy
+import os, os.path
+import shutil
+import math
+
 try:
-    from mnemosyne.core import *
-    mnemosyne_version = 1
-
-    from qt import *
-    import sys
-    import re
-    from copy import copy
-    import os, os.path
-
+    from hashlib import md5
 except ImportError:
-    mnemosyne_version = 2
+    from md5 import md5
 
-    from PyQt4 import QtCore
-    from PyQt4 import QtGui
-    from PyQt4.QtGui import QTextDocument, QTextCursor
-    from PyQt4.QtCore import QRegExp
-
-    from mnemosyne.libmnemosyne.hook import Hook
-    from mnemosyne.libmnemosyne.filter import Filter
-    from mnemosyne.libmnemosyne.plugin import Plugin
-    from mnemosyne.libmnemosyne.ui_components.configuration_widget import \
-       ConfigurationWidget
-
-    import sys
-    import re
-    from copy import copy
-    import os, os.path
+def tr(msg):
+    return QtCore.QCoreApplication.translate("Mnemogogo", msg)
 
 name = "Gogorender"
-version = "2.0"
-description = "Render words as image files on Mnemogogo export. (v" + version + ")"
+version = "2.0.1"
 
 render_chains = ["mnemogogo"]
 
-##############################################################################
-# Mnemosyne 1.x
-if mnemosyne_version == 1:
+# \xfffc is the "Object Replacement Character" (used for images)
+# \x2028 is the "Line Separator"
+# \x2029 is the "Paragraph Separator"
+not_word = u'[\s\u2028\u2029\ufffc]'
+not_line = u'[\r\n\u2028\u2029\ufffc]'
 
-    # Basic use
-    # ---------
-    # Save this file into the Mnemosyne plugins directory
-    # ($HOME/.mnemosyne/plugins) and start Mnemosyne. In the next Mnemogogo
-    # export, all words that contain non-latin characters should be exported
-    # as img files.
-    #
-    # Intermediate use
-    # ----------------
-    # Edit the config.py file that exists under the Mnemosyne home directory
-    # ($HOME/.mnemosyne), and add lines similar too:
-    # gogorender = {
-    #   'size' : 48,
-    #   'font' : 'DejaVu Sans'
-    # }
-    #
-    # Valid options include:
-    #       size                    font size (defaults to 12)
-    #       font                    font (defaults to Mnemosyne QA font)
-    #       <categoryname>.size     size per category
-    #       <categoryname>.font     font per category
-    #       reignore                regular expression for matching character
-    #                               sequences that should be ignored (not
-    #                               considered as words).
-    #       imgpath                 the path for saving images, defaults to
-    #                               'gogorender' in the Mnemosyne home
-    #                               directory.
-    #       clear_imgpath           clear the image path on startup
-    #                               (defaults to True)
-    #       render_match            only non-latin1 characters that match this
-    #                               regular expression are considered for
-    #                               rendering.
-    #                               Defaults to '.', i.e. all characters.
-    #       dont_render             a unicode string containing all non-latin-1
-    #                               characters that should not trigger
-    #                               rendering (You may need to change the top
-    #                               line of config.py to:
-    #                                # encoding: utf-8
-    #                                to avoid a compilation error.)
-    #                               This filter is applied after render_match.
-    #       transparent             transparent background? (default: true)
-    #       <categoryname>.ignore   exclude certain categories
-    #
-    # Advanced use
-    # ------------
-    # Write your own functions to decide whether and how to render words:
-    #
-    # There are two options (for config.py)
-    #       font_fn                 the name of a function that is called for
-    #                               each word to decide whether to render it,
-    #                               and which font and size to use. This may
-    #                               be a full path, e.g. 'mymodule.name', or
-    #                               a function name (NOT the function itself)
-    #                               in either gogorender.py or config.py.
-    #       split_fn                the name of a function called to break
-    #                               text up into words for rendering (or not).
-    #       render_fn               the name of a function that is called to
-    #                               render a word as an image.
-    #
-    # See the 'choose_font', 'split_text', and 'render_word' functions in this
-    # file for examples, and the required interface.
-    #
-    ###########################################################################
+default_config = {
+    'transparent'      : True,
+    'render_char'      : u'[\u0100-\uff00]',
+    'not_render_char'  : u'[—≠–œ‘’“”…€]',
+    'render_line_tags' : u'',
+    'max_line_width'   : 240,
+    'font_scaling'     : 1.0,
 
-    # Must return one of:
-    #   None            do not render the given word
-    #   (size, font)    a font size (integer) and name to use in rendering the
-    #                   given word
-    def choose_font(word, category, config):
-        if config['%s.ignore' % category]:
-            return None
+    'default_render'  : False,
+}
 
-        render_match_re = config['render_match_re']
-        dont_render = config.get('dont_render', u"")
+body_match_re = re.compile(r'^.*<body[^>]*>\n*(?P<body>.*)\n*</body>.*$',
+                           re.DOTALL)
 
-        # 1. decide whether to render
-        render = False
-        for c in word:
-            if ((ord(c) > 255) and render_match_re.match(c) and (c not in dont_render)):
-                render = True
-                break
+def translate(text):
+    return text
 
-        if not render:
-            return None
+class GogorenderConfig(Hook):
+    used_for = "configuration_defaults"
 
-        # 2. choose a font
+    def run(self):
+        self.config().setdefault("gogorender", default_config)
 
-        font = config["%s.font" % category]
-        if font is None:
-            font = get_config("QA_font")
+class GogorenderConfigWdgt(QtGui.QWidget, ConfigurationWidget):
+    name = name
 
+    def setting(self, key):
         try:
-            size = int(config["%s.size" % category])
-        except (ValueError, TypeError):
-            size = config["size"]
+            config = self.config()["gogorender"]
+        except KeyError: config = {}
 
-        return (size, font)
-
-    # Split the given text into pieces, the font choice and render functions
-    # will be called against each piece. The text will never contain html tags.
-    wsregex = re.compile(r'([ \t\n]+)', re.MULTILINE)
-
-    def simple_split(text, category, config):
-        return wsregex.split(text)
-
-    def list_split(text, category, config):
-        return list(text)
-
-    # This splitter groups words that would be rendered with the same font,
-    # including the spaces between them. It does not group across line
-    # breaks. This approach has two main advantages:
-    #  * Less individual image files, and thus less security prompts.
-    #  * Proper rendering of right-to-left scripts (like Arabic and Hebrew).
-    # and two main disadvantages:
-    #  * Less individual image files, and thus less opportunity for
-    #    line-breaking; Mnemogogo will instead scale images.
-    #  * The function is more complex.
-    def split_text(text, category, config):
-        font_fn = config.get_function('font_fn')
-
-        def classify_word(word, category=category, config=config):
-            if wsregex.match(word):
-                if '\n' in word:
-                    return 'X-newline'
-                return 'space'
-            f = font_fn(word, category, config)
-            if f is None:
-                return 'norender'
-            return '%d-%s' % f
-
-        wordlist = wsregex.split(text)
-        wordlist.append(None)
-
-        r = []
-        prev = 'X-first'
-        space = []
-        words = []
-        for word in wordlist:
-            if word is None:
-                curr = 'X-last'
-            else:
-                curr = classify_word(word)
-
-            if (curr == 'space') and (prev != 'space'):
-                if words == []:
-                    words.append(word)
-                    prev = curr
-                else:
-                    space.append(word)
-                continue
-
-            if (curr == prev) and (curr[0] != 'X'):
-                words.extend(space)
-                space = []
-                words.append(word)
-            else:
-                r.append(''.join(words))
-                if space != []:
-                    r.append(''.join(space))
-                    space = []
-                words = [word]
-                prev = curr
-
-        return r
-
-    def drawtext(width, height, font, color, text, path):
-        pix = QPixmap(width, height)
-        pix.fill(QColor('white'))
-
-        p = QPainter()
-        p.begin(pix)
-        p.setFont(font)
-        p.setPen(QColor(color))
-        p.drawText(0, 0, width, height, 0, text)
-        p.end()
-
-        if pix.save(path, "PNG"):
-            return path
+        if key == 'imgpath':
+            return os.path.join(self.database().media_dir(), "_gogorender")
         else:
-            return None
+            return config.get(key, default_config[key])
 
-    def transtext(width, height, font, color, text, path):
-        pix = QPixmap(width, height)
-        pix.fill(QColor('black'))
+    def __init__(self, component_manager, parent):
+        ConfigurationWidget.__init__(self, component_manager)
+        QtGui.QDialog.__init__(self, self.main_widget())
+        vlayout = QtGui.QVBoxLayout(self)
 
-        p = QPainter()
-        p.begin(pix)
-        p.setFont(font)
-        p.setPen(QColor(255,0,0)) # all red
-        p.drawText(0, 0, width, height, 0, text)
-        p.end()
+        # add basic settings
+        toplayout = QtGui.QFormLayout()
 
-        img = pix.convertToImage()
-        img.setAlphaBuffer(1)
+        self.not_render_char = QtGui.QLineEdit(self)
+        self.not_render_char.setText(self.setting("not_render_char")[1:-1])
+        toplayout.addRow(
+            tr("Treat these characters normally:"), self.not_render_char)
 
-        c = QColor(color)
-        r = qRed(c.rgb())
-        b = qBlue(c.rgb())
-        g = qGreen(c.rgb())
+        self.render_line_tags = QtGui.QLineEdit(self)
+        self.render_line_tags.setText(self.setting("render_line_tags"))
+        toplayout.addRow(
+            tr("Render entire lines right-to-left for these tags:"),
+            self.render_line_tags)
 
-        for x in range(0, img.width()):
-            for y in range(0, img.height()):
-                pix = img.pixel(x, y)
-                img.setPixel(x, y, qRgba(r, b, g, qRed(pix)))
+        self.max_line_width = QtGui.QSpinBox(self)
+        self.max_line_width.setRange(50, 5000)
+        self.max_line_width.setValue(int(self.setting('max_line_width')))
+        toplayout.addRow(tr("Maximum line width (pixels):"),
+                self.max_line_width)
 
-        if img.save(path, "PNG"):
-            return path
+        self.font_scaling = QtGui.QSpinBox(self)
+        self.font_scaling.setRange(1, 1000)
+        self.font_scaling.setValue(int(self.setting('font_scaling') * 100))
+        toplayout.addRow(tr("Font scaling (percentage):"), self.font_scaling)
+
+        self.transparent = QtGui.QCheckBox(self)
+        self.transparent.setChecked(self.setting("transparent"))
+        toplayout.addRow(tr("Render with transparency:"), self.transparent)
+
+        self.default_render = QtGui.QCheckBox(self)
+        self.default_render.setChecked(self.setting("default_render"))
+        toplayout.addRow(tr("Render in Mnemosyne (for testing):"),
+                         self.default_render)
+
+        vlayout.addLayout(toplayout)
+
+    def apply(self):
+        was_default_render = self.setting('default_render')
+
+        config = self.config()['gogorender']
+
+        config["not_render_char"]  = u"[%s]" % unicode(self.not_render_char.text())
+        config["render_line_tags"] = u"%s" % unicode(self.render_line_tags.text())
+        config["transparent"]      = self.transparent.isChecked()
+        config["default_render"]   = self.default_render.isChecked()
+        config["max_line_width"]   = self.max_line_width.value()
+        config["font_scaling"]     = float(self.font_scaling.value()) / 100.0
+
+        imgpath = self.setting("imgpath")
+        if os.path.exists(imgpath): shutil.rmtree(imgpath)
+        if not os.path.exists(imgpath): os.mkdir(imgpath)
+
+        for chain in render_chains:
+            try:
+                filter = self.render_chain(chain).filter(Gogorender)
+                if filter:
+                    filter.reconfigure()
+            except KeyError: pass
+
+        if was_default_render != config['default_render']:
+            if was_default_render:
+                self.render_chain('default').unregister_filter(Gogorender)
+            else:
+                self.render_chain('default').register_filter_at_back(
+                        Gogorender, before=["ExpandPaths"])
+
+def moveprev(pos):
+    pos.movePosition(QTextCursor.PreviousCharacter, QTextCursor.KeepAnchor)
+
+def movenext(pos):
+    pos.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor)
+
+class Gogorender(Filter):
+    name = name
+    version = version
+    tag_re = re.compile("(<[^>]*>)")
+
+    def __init__(self, component_manager):
+        Filter.__init__(self, component_manager)
+        self.reconfigure()
+        self.debug = component_manager.debug_file != None
+
+    def setting(self, key):
+        try:
+            config = self.config()["gogorender"]
+        except KeyError: config = {}
+
+        if key == 'imgpath':
+            return os.path.join(self.database().media_dir(), "_gogorender")
         else:
-            return None
+            return config.get(key, default_config[key])
+
+    def reconfigure(self):
+        self.imgpath = self.setting('imgpath')
+        if not os.path.exists(self.imgpath): os.mkdir(self.imgpath)
+
+        self.transparent        = self.setting('transparent')
+        self.render_char_re     = QRegExp(self.setting('render_char'))
+        self.render_line_tags   = {t.strip()
+                for t in self.setting('render_line_tags').split(',')}
+        self.not_render_char_re = QRegExp(self.setting('not_render_char'))
+        self.not_word_re        = QRegExp(not_word)
+        self.not_line_re        = QRegExp(not_line)
+        self.max_line_width     = int(self.setting('max_line_width'))
+
+    def debugline(self, msg, pos):
+        if self.debug:
+            s = pos.selectedText()
+            try:
+                c = ord(unicode(s[-1]))
+            except IndexError: c = 0
+            self.component_manager.debug(
+                u'gogorender: %s pos=%d char="%s" (0x%04x)'
+                % (msg, pos.position(), s, c))
 
     # Must return one of:
     #   None            not rendered after all
     #   path            a path to the rendered image
-    # config will contain
-    #  style            a string with 'b' for bold and 'i' for italic
-    #  color            current color
-    #  transparent      a boolean
-    def render_word(word, category, config, fontsize, font):
-        # 1. Working out the Qt-specific font details (and for filename)
+    def render_word(self, word, font, color, render_rtol):
+        fontname = font.family()
+        fontsize = font.pointSize()
+
         style = ""
-        weight = QFont.Normal
-        if ('b' in config['style']):
-            weight = QFont.Bold
-            style = style + "b"
+        if font.bold():   style += 'b'
+        if font.italic(): style += 'i'
 
-        italic = False
-        if ('i' in config['style']):
-            italic = True
-            style = style + "i"
+        colorname = color.name()[1:]
 
-        if font is None:
-            font = "Helvetica"
-
-        # 2. Generate a file name
-        fword = word.replace('/',  '_sl-')\
+        # Generate a file name
+        fword = word.replace('/', '_sl-')\
                     .replace('\\', '_bs-')\
-                    .replace(' ',  '_')
-        if fword[0] == '.': fword = '-' + fword
+                    .replace(' ', '_')\
+                    .replace('#', '_ha-')\
+                    .replace('{', '_cpo-')\
+                    .replace('}', '_cpc-')\
+                    .replace('*', '_ast-')
+        if fword[0] == '.': fword = '_' + fword
+        if fword[0] == '-': fword = '_' + fword
 
-        filename = "%s-%s-%s-%s-%s.png" % (
-            fword.encode('punycode'), font.replace(' ', '_'),
-                str(fontsize), style, config['color'])
-        path = os.path.join(config['imgpath'], filename)
+        filename = "%s-%s-%s-%s-%s" % (
+            fword, fontname, str(fontsize), style, colorname)
+        filename = md5(filename.encode("utf-8")).hexdigest() + ".png"
+        path = os.path.join(self.imgpath, filename)
+        relpath = "_gogorender" + "/" + filename
 
         if (os.path.exists(path)):
-            return path
+            return relpath
 
-        # 3. Render with Qt
-        text = QString(word)
+        # Render with Qt
+        text = QtCore.QString(word)
 
-        font = QFont(font, fontsize, weight, italic)
-        fm = QFontMetrics(font)
-
+        fm = QtGui.QFontMetrics(font)
         width = fm.width(text) + (fm.charWidth('M', 0) / 2)
         height = fm.height()
+
+        option = QtGui.QTextOption()
+        if render_rtol:
+            lines = int(math.ceil(float(width) / float(self.max_line_width)))
+            width = min(width, self.max_line_width)
+            height = (height + fm.leading()) * lines
+            option.setTextDirection(QtCore.Qt.RightToLeft)
+
+        tbox = QtCore.QRectF(0, 0, width, height)
 
         # Alternative: calculate the bounding box from the text being rendered;
         #              disadvantage = bad alignment of adjacent images.
@@ -316,658 +263,265 @@ if mnemosyne_version == 1:
         #width = bbox.width()
         #height = bbox.height()
 
-        if config.get('transparent', True):
-            r = transtext(width, height, font, config['color'], text, path)
+        if self.debug:
+            self.component_manager.debug(
+                "gogorender: rendering '%s' as a %dx%d image at %s"
+                % (text, width, height, path))
+
+        img = QtGui.QImage(width, height, QtGui.QImage.Format_ARGB32)
+
+        if self.transparent:
+            img.fill(QtGui.qRgba(0,0,0,0))
         else:
-            r = drawtext(width, height, font, config['color'], text, path)
+            img.fill(QtGui.qRgba(255,255,255,255))
 
-        return r
-        
-    class Config:
-        def __init__(self):
+        p = QtGui.QPainter()
+        p.begin(img)
+        p.setBackgroundMode(QtCore.Qt.TransparentMode)
+        p.setRenderHint(QtGui.QPainter.Antialiasing +
+                        QtGui.QPainter.HighQualityAntialiasing +
+                        QtGui.QPainter.SmoothPixmapTransform)
+        p.setFont(font)
+        p.setPen(QtGui.QColor(color))
+        p.drawText(tbox, text, option)
+        p.end()
 
-            try: config = copy(get_config(name))
-            except KeyError:
-                set_config(name, {})
-                config = {}
-
-            defaults = {
-                'font' : None,
-                'size' : '12',
-                'reignore' : r'[()]',
-                'basedir' : get_basedir(),
-                'imgpath' : os.path.join(get_basedir(), name),
-                'font_fn' : 'choose_font',
-                'split_fn' : 'split_text',
-                'render_fn' : 'render_word',
-                'clear_imgpath' : True,
-                'transparent' : True,
-            }
-
-            for (setting, default) in defaults.iteritems():
-                if not config.has_key(setting):
-                    config[setting] = default
-
-            self.config = config
-
-        def get_function(self, key):
-            fullname = self.config[key]
-            nms = fullname.rsplit('.', 1)
-
-            try:
-                if len(nms) == 1:
-                    try:
-                        r = globals()[nms[0]]
-                        return r
-                    except:
-                        nms.insert(0, 'config')
-
-                [modulenm, funcnm] = nms
-                module = __import__(modulenm, globals(), locals(), [], -1)
-                return getattr(module, funcnm)
-
-            except Exception, e:
-                logger.error(
-                    "%s: cannot find function '%s' (%s)" % (name, fullname, e))
-
+        if img.save(path, "PNG"):
+            return relpath
+        else:
             return None
 
-        def has_key(self, key):
-            return self.config.has_key(key)
+    # Must return one of:
+    #   None            not rendered after all
+    #   path            a path to the rendered image
+    def render_html(self, word, html, font):
+        filename = md5(word.encode("utf-8")).hexdigest() + "-html.png"
+        path = os.path.join(self.imgpath, filename)
+        relpath = "_gogorender" + "/" + filename
 
-        def get(self, key, default):
-            if self.config.has_key(key):
-                return self.config[key]
-            return default
+        if (os.path.exists(path)):
+            return relpath
 
-        def __getitem__(self, key):
-            if self.config.has_key(key):
-                return self.config[key]
+        text = QtCore.QString(word)
+        fm = QtGui.QFontMetrics(font)
+        width = fm.width(text) + (fm.charWidth('M', 0) / 2)
 
-            basekey = key.split('.', 1)[-1]
-            if self.config.has_key(basekey):
-                return self.config[basekey]
+        # add 25% to the width
+        lines = int(math.ceil((float(width) * 1.25) / float(self.max_line_width)))
+        width = min(width, self.max_line_width)
+        height = (fm.height() + fm.leading()) * lines
 
+        # Render with Qt, adapted from:
+        # http://www.qtcentre.org/threads/11357-HTML-text-drawn-with-QPainter-drawText()
+        doc = QTextDocument()
+        doc.setUndoRedoEnabled(False)
+        doc.setHtml(html)
+        doc.setTextWidth(width)
+        doc.setDocumentMargin(0.0)
+        doc.setIndentWidth(0.0)
+        doc.setUseDesignMetrics(True)
+        doc.setDefaultFont(font)
+
+        option = QtGui.QTextOption()
+        option.setTextDirection(QtCore.Qt.RightToLeft)
+
+        tbox = QtCore.QRectF(0, 0, width, height)
+
+        if self.debug:
+            self.component_manager.debug(
+                "gogorender: rendering '%s' as a %dx%d image at %s"
+                % (word, width, height, path))
+
+        img = QtGui.QImage(width, height, QtGui.QImage.Format_ARGB32)
+        if self.transparent:
+            img.fill(QtGui.qRgba(0,0,0,0))
+        else:
+            img.fill(QtGui.qRgba(255,255,255,255))
+
+        p = QtGui.QPainter()
+        p.begin(img)
+        p.setBackgroundMode(QtCore.Qt.TransparentMode)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        doc.drawContents(p, tbox)
+        p.end()
+
+        if img.save(path, "PNG"):
+            return relpath
+        else:
             return None
 
-        def __setitem__(self, key, value):
-            self.config[key] = value
+    def substitute(self, text, mapping):
+        r = []
+        for s in self.tag_re.split(text):
+            if len(s) == 0 or s[0] == '<':
+                r.append(s)
+                continue
 
-        def __delitem__(self, key):
-            del self.config[key]
+            while mapping:
+                (match, path) = mapping[0]
 
-        def keys(self):
-            return self.config.keys()
+                (before, x, after) = s.partition(match)
+                if x == '':
+                    s = before
+                    break
+                
+                r.append(before)
+                r.append('<img src="%s"/>' % path)
+                mapping = mapping[1:]
+                s = after
 
-    class Splitter:
-        color_att = r'(\scolor\s*=\s*"(?P<color>[^"]+)")'
-        style_att = r'(\sstyle\s*=\s*"(?P<style>[^"]+)")'
-        other_att = r'(\s\w+\s*=\s*"[^"]+")'
-        ignore_tag = (r'(<\s*(?P<tag>/\w*|\w+)('
-                      + color_att
-                      + r'|' + style_att
-                      + r'|' + other_att
-                      + ')*\s*/?>)')
+            r.append(s)
 
-        def __init__(self, text, category, split_fn, config):
-            extra_ignore = ''
-            if config['reignore'] != '':
-                extra_ignore = r'(%s)|' % config['reignore']
+        return ''.join(r)
 
-            ignore_re_text = (r'(?P<ignore>&#?[A-Za-z0-9]+;|'
-                              + extra_ignore + self.ignore_tag + r')(?P<rest>.*)')
-            self.ignore_re = re.compile(ignore_re_text,
-                re.IGNORECASE + re.MULTILINE + re.DOTALL + re.UNICODE)
+    def run(self, text, card, fact_key, **render_args):
+        doc = QTextDocument()
+        doc.setUndoRedoEnabled(False)
+        doc.setDocumentMargin(0.0)
+        doc.setIndentWidth(0.0)
+        doc.setUseDesignMetrics(True)
+        doc_modified = False
 
-            self.state = {
-                'color' : ['black'],
-                'style' : [],
-            }
-            self.curr = []
-            self.words = []
+        proxy_key = card.card_type.fact_key_format_proxies()[fact_key]
+        font_string = self.config().card_type_property(
+            "font", card.card_type, proxy_key)
 
-            self.category = category
-            self.text = text
-            self.split_fn = split_fn
-            self.config = config
+        if font_string:
+            family,size,x,x,weight,italic,u,s,x,x = font_string.split(",")
+            font = QtGui.QFont(family, int(size), int(weight), bool(int(italic)))
+            doc.setDefaultFont(font)
 
-        def __iter__(self):
-            return self
+        if {True for t in card.tags if t.name in self.render_line_tags}:
+            render_line = True
+            not_word_re = self.not_line_re
+        else:
+            render_line = False
+            not_word_re = self.not_word_re
 
-        def short_state(self):
-            style = self.state['style'][-2:]
-            style.reverse()
+        doc.setHtml(text)
+        if self.debug:
+            self.component_manager.debug(
+                "gogorender: %s\ngogorender: %s\ngogorender: %s"
+                % (70 * "-", text, 70 * "-"))
 
-            return {
-                'color' : self.state['color'][-1],
-                'style' : ''.join(style)
-            }
+        render = []
+        pos = doc.find(self.render_char_re)
+        while not pos.isNull():
+            s = pos.selectedText()
+            if (self.not_render_char_re.exactMatch(s)
+                    or not_word_re.exactMatch(s)):
+                self.debugline("skip", pos)
+                movenext(pos)
+                pos = doc.find(self.render_char_re, pos)
+                continue;
+            self.debugline("===", pos)
 
-        def process_style(self, text):
-            stylepairs = text.split(";")
-            d = {}
-            for sp in stylepairs:
-                try:
-                    name, value = sp.split(":", 1)
-                    d[name.strip().lower()] = value.strip()
-                except:
-                    pass
-            return d
+            fmt = pos.charFormat()
+            font = fmt.font()
+            color = fmt.foreground().color()
 
-        def split_curr(self):
-            curr = ''.join(self.curr)
-            self.curr = []
+            # find the start of the word
+            #moveprev(pos)
+            while not pos.atBlockStart():
+                moveprev(pos)
+                s = pos.selectedText()
+                ccolor = pos.charFormat().foreground().color()
+                self.debugline("<--", pos)
 
-            self.words = self.split_fn(curr, self.category, self.config)
-            if self.words == []:
-                self.words = [curr]
-            self.words.reverse()
+                if len(s) > 0 and not_word_re.exactMatch(s[0]):
+                    movenext(pos)
+                    self.debugline("-->", pos)
+                    break;
 
-            return (self.words.pop(), self.short_state())
+                if (not render_line and
+                        (pos.charFormat().font() != font or ccolor != color)):
+                    break;
 
-        def next(self):
-            if self.words != []:
-                return (self.words.pop(), self.short_state())
+            pos.setPosition(pos.position(), QTextCursor.MoveAnchor)
 
-            if self.text == '':
-                if len(self.curr) > 0:
-                    return self.split_curr()
-                raise StopIteration
+            # find the end of the word
+            while not pos.atBlockEnd():
+                movenext(pos)
+                s = pos.selectedText()
+                ccolor = pos.charFormat().foreground().color()
+                self.debugline("-->", pos)
 
-            r = self.ignore_re.match(self.text)
+                if ((not render_line and
+                           (pos.charFormat().font() != font or ccolor != color))
+                        or not_word_re.exactMatch(s[-1])):
+                    moveprev(pos)
+                    self.debugline("<-)", pos)
+                    break;
 
-            # keep building word
-            if not r:
-                self.curr.append(self.text[0])
-                self.text = self.text[1:]
-                return self.next()
+            if pos.hasSelection():
+                word = unicode(pos.selectedText())
 
-            # return word
-            if self.curr != []:
-                return self.split_curr()
+                if self.debug:
+                    self.component_manager.debug(
+                        u'gogorender: word="%s"' % word)
 
-            # ignore element (track state)
-            tag = r.group('tag')
-            if tag:
-                if (tag == 'u'):
-                    tag = 'i'
-                elif (tag == '/u'):
-                    tag = '/i'
+                font.setPointSizeF(font.pointSize() *
+                                    self.setting('font_scaling'))
 
-                if (tag == 'i') or (tag == 'b'):
-                    self.state['style'].append(tag)
-
-                elif (tag == '/i') or (tag == '/b'):
-                    try:
-                        self.state['style'].pop()
-                    except IndexError:
-                        pass
-
-                elif tag == 'font':
-                    if r.group('color'):
-                        self.state['color'].append(r.group('color'))
-                    else:
-                        self.state['color'].append(self.state['color'][-1])
-
-                elif tag == 'span':
-                    style = self.process_style(r.group('style'))
-                    if style.has_key('color'):
-                        self.state['color'].append(style['color'])
-                    else:
-                        self.state['color'].append(self.state['color'][-1])
-
-                elif (((tag == '/font') or (tag == '/span'))
-                      and (len(self.state['color']) > 0)):
-                    try:
-                        self.state['color'].pop()
-                    except IndexError:
-                        pass
-
-            self.text = r.group('rest')
-            return (r.group('ignore'), None)
-
-    def test_splitter():
-        splitter = Splitter(sys.stdin.read(), 'test', split_text, Config())
-        for (word, state) in splitter:
-            if state:
-                print ("'%s' (style=%s color=%s)" % (word, state['style'], state['color']))
-            else:
-                print ("'%s' (ignore)" % word)
-
-
-    class Gogorender(Plugin):
-
-        def description(self):
-            return ("Render segments of text as image files. (v" +
-                    version + ")")
-
-        def load(self):
-            logger.info("%s: version %s" % (name, version))
-
-            self.config = Config()
-            imgpath = self.config['imgpath']
-            self.config['render_match_re'] = re.compile(
-                    self.config.get('render_match', r'.'), re.DOTALL)
-
-            if self.config['clear_imgpath'] and os.path.exists(imgpath):
-                for file in os.listdir(imgpath):
-                    filepath = os.path.join(imgpath, file)
-                    try:
-                        if os.path.isfile(filepath):
-                            os.unlink(filepath)
-                    except:
-                        pass
-
-            if not os.path.exists(imgpath):
-                os.mkdir(imgpath)
-
-            self.format_mnemosyne = (
-                    self.config.has_key('mnemosyne.font_fn')
-                and self.config.has_key('mnemosyne.split_fn')
-                and self.config.has_key('mnemosyne.render_fn'))
-
-            if (self.format_mnemosyne):
-                register_function_hook("filter_q", self.mnemosyne_format)
-                register_function_hook("filter_a", self.mnemosyne_format)
-
-            self.format_mnemogogo = (
-                    self.config.has_key('font_fn')
-                and self.config.has_key('split_fn')
-                and self.config.has_key('render_fn'))
-
-            if (self.format_mnemogogo):
-                register_function_hook("gogo_q", self.mnemogogo_format)
-                register_function_hook("gogo_a", self.mnemogogo_format)
-
-        def unload(self):
-            if (self.format_mnemosyne):
-                unregister_function_hook("filter_q", self.format)
-                unregister_function_hook("filter_a", self.format)
-
-            if (self.format_mnemogogo):
-                unregister_function_hook("gogo_q", self.format)
-                unregister_function_hook("gogo_a", self.format)
-        
-        def mnemosyne_format(self, text, card):
-            return self.format(text, card,
-                               self.config.get_function('mnemosyne.font_fn'),
-                               self.config.get_function('mnemosyne.split_fn'),
-                               self.config.get_function('mnemosyne.render_fn'))
-
-        def mnemogogo_format(self, text, card):
-            return self.format(text, card,
-                               self.config.get_function('font_fn'),
-                               self.config.get_function('split_fn'),
-                               self.config.get_function('render_fn'))
-
-        def format(self, text, card, font_fn, split_fn, render_fn):
-
-            if (font_fn is None) or (render_fn is None):
-                return text
-
-            splitter = Splitter(text, card.cat.name, split_fn, self.config)
-
-            r = []
-            for (word, state) in splitter:
-                if (not state):
-                    r.append(word)
-                    continue
-
-                for (key, value) in state.iteritems():
-                    self.config[key] = value
-
-                try:
-                    font = font_fn(word, card.cat.name, self.config)
-                except Exception, e:
-                    logger.error("%s: failure in font_fn: %s" % (name, str(e)))
-                    font = None
-
-                if font is None:
-                    r.append(word)
-                    continue
-
-                (size, fontname) = font
-
-                try:
-                    path = render_word(word, card.cat.name, self.config,
-                                       size, fontname)
-                except Exception, e:
-                    logger.error("%s: failure in render_word: %s" % (name, str(e)))
-                    path = None
-
-                if path is None:
-                    r.append(word)
+                if render_line:
+                    html = unicode(pos.selection().toHtml())
+                    path = self.render_html(word, html, font)
                 else:
-                    r.append('<img src="%s"/>' % path)
+                    path = self.render_word(word, font, color, render_line)
 
-            return ''.join(r)
+                if path is not None:
+                    if render_line:
+                        pos.removeSelectedText()
+                        pos.insertImage(path)
+                        doc_modified = True
+                    else:
+                        render.append((word, unicode(path)))
 
-    p = Gogorender()
-    p.load()
+            pos = doc.find(self.render_char_re, pos)
 
-##############################################################################
-# Mnemosyne 2.x
-elif mnemosyne_version == 2:
+        if doc_modified:
+            text = body_match_re.sub(r'\g<body>', unicode(doc.toHtml()))
+        elif render:
+            text = self.substitute(unicode(text), render)
 
-    default_config = {
-        'transparent'     : True,
-        'render_char'     : u'[\u0100-\uff00]',
-        'not_render_char' : u'[—≠–œ‘’“”…€]',
-
-        # \xfffc is the "Object Replacement Character" (used for images)
-        # \x2028 is the "Line Separator"
-        # \x2029 is the "Paragraph Separator"
-        'not_word'        : u'[\s\u2028\u2029\ufffc]',
-
-        'default_render'  : False,
-    }
-
-    def translate(text):
         return text
 
-    class GogorenderConfig(Hook):
-        used_for = "configuration_defaults"
+class GogorenderPlugin(Plugin):
+    name = name
+    description = (tr("Render words as image files on Mnemogogo export.") +
+                   " (v" + version + ")")
+    components = [GogorenderConfig, GogorenderConfigWdgt, Gogorender]
 
-        def run(self):
-            self.config().setdefault("gogorender", default_config)
+    def __init__(self, component_manager):
+        Plugin.__init__(self, component_manager)
 
-    class GogorenderConfigWdgt(QtGui.QWidget, ConfigurationWidget):
-        name = name
+    def activate(self):
+        Plugin.activate(self)
 
-        def __init__(self, component_manager, parent):
-            ConfigurationWidget.__init__(self, component_manager)
-            QtGui.QDialog.__init__(self, self.main_widget())
-            vlayout = QtGui.QVBoxLayout(self)
-
-            config = self.config()['gogorender']
-
-            # add basic settings
-            toplayout = QtGui.QFormLayout()
-
-            self.not_render_char = QtGui.QLineEdit(self)
-            self.not_render_char.setText(config["not_render_char"][1:-1])
-            toplayout.addRow(
-                translate("Treat these characters normally:"),
-                self.not_render_char)
-
-            self.transparent = QtGui.QCheckBox(self)
-            self.transparent.setChecked(config["transparent"])
-            toplayout.addRow(translate("Render with transparency:"), self.transparent)
-
-            self.default_render = QtGui.QCheckBox(self)
-            self.default_render.setChecked(config["default_render"])
-            toplayout.addRow(translate("Render in Mnemosyne (for testing):"),
-                             self.default_render)
-
-            vlayout.addLayout(toplayout)
-
-        def apply(self):
-            was_default_render = self.config()["gogorender"]["default_render"]
-
-            config = self.config()['gogorender']
-
-            config["not_render_char"] = u"[%s]" % unicode(self.not_render_char.text())
-            config["transparent"]     = self.transparent.isChecked()
-            config["default_render"]  = self.default_render.isChecked()
-
-            for chain in render_chains:
-                try:
-                    filter = self.render_chain(chain).filter(Gogorender)
-                    if filter:
-                        filter.reconfigure()
-                except KeyError: pass
-
-            if was_default_render != config['default_render']:
-                if was_default_render:
-                    self.render_chain('default').unregister_filter(Gogorender)
-                else:
-                    self.render_chain('default').register_at_back(Gogorender)
-
-    def moveprev(pos):
-        pos.movePosition(QTextCursor.PreviousCharacter, QTextCursor.KeepAnchor)
-
-    def movenext(pos):
-        pos.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor)
-
-    class Gogorender(Filter):
-        name = name
-        version = version
-        tag_re = re.compile("(<[^>]*>)")
-
-        def __init__(self, component_manager):
-            Filter.__init__(self, component_manager)
-            self.reconfigure()
-            self.debug = component_manager.debug_file != None
-
-        def setting(self, key):
-            try:
-                config = self.config()["gogorender"]
-            except KeyError: config = {}
-
-            if key == 'imgpath':
-                return config.get('imgpath',
-                    os.path.join(self.config().data_dir, 'gogorender'))
-            else:
-                return config.get(key, default_config[key])
-
-        def reconfigure(self):
-            self.imgpath = self.setting('imgpath')
-            if not os.path.exists(self.imgpath): os.mkdir(self.imgpath)
-
-            self.transparent        = self.setting('transparent')
-            self.render_char_re     = QRegExp(self.setting('render_char'))
-            self.not_render_char_re = QRegExp(self.setting('not_render_char'))
-            self.not_word_re        = QRegExp(self.setting('not_word'))
-
-        def debugline(self, msg, pos):
-            if self.debug:
-                s = pos.selectedText()
-                try:
-                    c = ord(unicode(s[0]))
-                except IndexError: c = 0
-                self.component_manager.debug(
-                    u'gogorender: %s pos=%d char="%s" (0x%04x)'
-                    % (msg, pos.position(), s, c))
-
-        # Must return one of:
-        #   None            not rendered after all
-        #   path            a path to the rendered image
-        def render_word(self, word, font, color):
-            fontname = font.family()
-            fontsize = font.pointSize()
-
-            style = ""
-            if font.bold():   style += 'b'
-            if font.italic(): style += 'i'
-
-            colorname = color.name()[1:]
-
-            # Generate a file name
-            fword = word.replace('/', '_sl-')\
-                        .replace('\\', '_bs-')\
-                        .replace(' ', '_')\
-                        .replace('#', '_ha-')\
-                        .replace('{', '_cpo-')\
-                        .replace('}', '_cpc-')\
-                        .replace('*', '_ast-')
-            if fword[0] == '.': fword = '_' + fword
-            if fword[0] == '-': fword = '_' + fword
-
-            filename = "%s-%s-%s-%s-%s.png" % (
-                fword, fontname, str(fontsize), style, colorname)
-            path = os.path.join(self.imgpath, filename)
-
-            if (os.path.exists(path)):
-                return path
-
-            # Render with Qt
-            text = QtCore.QString(word)
-
-            fm = QtGui.QFontMetrics(font)
-            width = fm.width(text) + (fm.charWidth('M', 0) / 2)
-            height = fm.height()
-
-            # Alternative: calculate the bounding box from the text being rendered;
-            #              disadvantage = bad alignment of adjacent images.
-            #bbox = fm.boundingRect(text)
-            #width = bbox.width()
-            #height = bbox.height()
-
-            img = QtGui.QImage(width, height, QtGui.QImage.Format_ARGB32)
-
-            if self.transparent:
-                img.fill(QtGui.qRgba(0,0,0,0))
-            else:
-                img.fill(QtGui.qRgba(255,255,255,255))
-
-            p = QtGui.QPainter()
-            p.begin(img)
-            p.setFont(font)
-            p.setPen(QtGui.QColor(color))
-            p.drawText(0, 0, width, height, 0, text)
-            p.end()
-
-            if img.save(path, "PNG"):
-                return path
-            else:
-                return None
-
-        def substitute(self, text, mapping):
-            r = []
-            for s in self.tag_re.split(text):
-                if len(s) == 0 or s[0] == '<':
-                    r.append(s)
-                    continue
-
-                while mapping:
-                    (match, path) = mapping[0]
-
-                    (before, x, after) = s.partition(match)
-                    if x == '':
-                        s = before
-                        break
-                    
-                    r.append(before)
-                    r.append('<img src="%s"/>' % path)
-                    mapping = mapping[1:]
-                    s = after
-
-                r.append(s)
-
-            return ''.join(r)
-
-        def run(self, text, card, fact_key, **render_args):
-            doc = QTextDocument()
-
-            proxy_key = card.card_type.fact_key_format_proxies()[fact_key]
-            font_string = self.config().card_type_property(
-                "font", card.card_type, proxy_key)
-
-            if font_string:
-                family,size,x,x,weight,italic,u,s,x,x = font_string.split(",")
-                font = QtGui.QFont(family, int(size), int(weight), bool(int(italic)))
-                doc.setDefaultFont(font)
-
-            doc.setHtml(text)
-            if self.debug:
-                self.component_manager.debug(
-                    "gogorender: %s\ngogorender: %s\ngogorender: %s"
-                    % (70 * "-", text, 70 * "-"))
-
-            render = []
-            pos = doc.find(self.render_char_re)
-            while not pos.isNull():
-                s = pos.selectedText()
-                if (self.not_render_char_re.exactMatch(s)
-                        or self.not_word_re.exactMatch(s)):
-                    self.debugline("skip", pos)
-                    movenext(pos)
-                    pos = doc.find(self.render_char_re, pos)
-                    continue;
-                self.debugline("==", pos)
-
-                fmt = pos.charFormat()
-                font = fmt.font()
-                color = fmt.foreground().color()
-
-                # find the start of the word
-                #moveprev(pos)
-                while not pos.atBlockStart():
-                    moveprev(pos)
-                    s = pos.selectedText()
-                    ccolor = pos.charFormat().foreground().color()
-                    self.debugline("<--", pos)
-
-                    if len(s) > 0 and self.not_word_re.exactMatch(s[0]):
-                        movenext(pos)
-                        self.debugline("-->", pos)
-                        break;
-
-                    if pos.charFormat().font() != font or ccolor != color:
-                        break;
-
-                pos.setPosition(pos.position(), QTextCursor.MoveAnchor)
-
-                # find the end of the word
-                while not pos.atBlockEnd():
-                    movenext(pos)
-                    s = pos.selectedText()
-                    ccolor = pos.charFormat().foreground().color()
-                    self.debugline("-->", pos)
-
-                    if (pos.charFormat().font() != font or ccolor != color
-                            or self.not_word_re.exactMatch(s[-1])):
-                        moveprev(pos)
-                        self.debugline("<--)", pos)
-                        break;
-
-                if pos.hasSelection():
-                    word = pos.selectedText()
-                    if self.debug:
-                        self.component_manager.debug(
-                            u'gogorender: word="%s"' % word)
-                    path = self.render_word(unicode(word), font, color)
-
-                    if path is not None:
-                        render.append((unicode(word), unicode(path)))
-
-                pos = doc.find(self.render_char_re, pos)
-
-            if render:
-                return self.substitute(unicode(text), render)
-            else:
-                return text
-
-    class GogorenderPlugin(Plugin):
-        name = name
-        description = description
-        components = [GogorenderConfig, GogorenderConfigWdgt, Gogorender]
-
-        def __init__(self, component_manager):
-            Plugin.__init__(self, component_manager)
-            if  self.config()['gogorender']['default_render']:
+        try:
+            if self.config()['gogorender']['default_render']:
                 render_chains.append('default')
+        except KeyError: pass
 
-        def activate(self):
-            Plugin.activate(self)
-            for chain in render_chains:
-                try:
-                    self.new_render_chain(chain)
-                except KeyError: pass
+        for chain in render_chains:
+            try:
+                self.new_render_chain(chain)
+            except KeyError: pass
 
-        def deactivate(self):
-            Plugin.deactivate(self)
-            for chain in render_chains:
-                try:
-                    self.render_chain(chain).unregister_filter(Gogorender)
-                except KeyError: pass
+    def deactivate(self):
+        Plugin.deactivate(self)
+        for chain in render_chains:
+            try:
+                self.render_chain(chain).unregister_filter(Gogorender)
+            except KeyError: pass
 
-        def new_render_chain(self, name):
-            if name in render_chains:
-                self.render_chain(name).register_at_back(Gogorender)
+    def new_render_chain(self, name):
+        if name in render_chains:
+            self.render_chain(name).register_filter_at_back(
+                    Gogorender, before=["ExpandPaths"])
 
-    # Register plugin.
+# Register plugin.
 
-    from mnemosyne.libmnemosyne.plugin import register_user_plugin
-    register_user_plugin(GogorenderPlugin)
+from mnemosyne.libmnemosyne.plugin import register_user_plugin
+register_user_plugin(GogorenderPlugin)
 

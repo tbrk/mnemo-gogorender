@@ -175,6 +175,9 @@ class Gogorender(Filter):
         self.reconfigure()
         self.debug = component_manager.debug_file != None
 
+        self.non_latin_font_size_increase = \
+                self.config()["non_latin_font_size_increase"]
+
     def setting(self, key):
         try:
             config = self.config()["gogorender"]
@@ -460,8 +463,9 @@ class Gogorender(Filter):
                     self.component_manager.debug(
                         u'gogorender: word="%s"' % word)
 
-                font.setPointSizeF(font.pointSize() *
-                                    self.setting('font_scaling'))
+                font.setPointSizeF((font.pointSize() +
+                                    self.non_latin_font_size_increase)
+                                   * self.setting('font_scaling'))
 
                 if render_line:
                     html = unicode(pos.selection().toHtml())
